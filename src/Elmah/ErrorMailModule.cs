@@ -26,7 +26,7 @@
 namespace Elmah
 {
     #region Imports
-    
+
     using System;
     using System.Diagnostics;
     using System.Globalization;
@@ -45,6 +45,7 @@ namespace Elmah
     using WaitCallback = System.Threading.WaitCallback;
     using Encoding = System.Text.Encoding;
     using NetworkCredential = System.Net.NetworkCredential;
+    using System.Reflection;
 
     #endregion
 
@@ -78,6 +79,44 @@ namespace Elmah
 
     public delegate void ErrorMailEventHandler(object sender, ErrorMailEventArgs args);
 
+    public class ElmahLogInfo : Exception
+    {
+        private string _Stack;
+        private static readonly FieldInfo _stackTrace = typeof(Exception).GetField("_stackTraceString", BindingFlags.NonPublic | BindingFlags.Instance);
+        public ElmahLogInfo(string subject)
+            : this(subject, null, null)
+        {
+        }
+
+        public ElmahLogInfo(string subject, Exception innerException)
+            : this(subject, null, innerException)
+        {
+        }
+        public ElmahLogInfo(string subject, string body, Exception innerException)
+            : base(subject != null && subject.Length > 100 ? subject.Substring(0, 100) + "[...]" : subject, innerException)
+        {
+            if (subject != null && subject.Length > 100)
+                body = subject + "\n" + body;
+            _Stack = body;
+            _stackTrace.SetValue(this, _Stack);
+        }
+        public override string StackTrace
+        {
+            get
+            {
+                return _Stack;
+            }
+        }
+        public override string ToString()
+        {
+            return _Stack;
+        }
+    }
+
+    public class EnhancedErrorMailModule : ErrorMailModule
+    {
+
+    }
     /// <summary>
     /// HTTP module that sends an e-mail whenever an unhandled exception
     /// occurs in an ASP.NET web application.
@@ -85,6 +124,24 @@ namespace Elmah
 
     public class ErrorMailModule : HttpModuleBase, IExceptionFiltering
     {
+        public ErrorMailModule()
+        {
+
+        }
+        HttpContext _Context;
+        public ErrorMailModule(HttpContext context)
+        {
+            this.HttpModuleEnabled = true;
+            this._Context = context;
+            if (this._Context != null)
+            {
+                this.OnInit(context.ApplicationInstance);
+            }
+        }
+        public void Log(Exception ex, HttpContext c)
+        {
+            this.OnError(ex, c ?? _Context);
+        }
         private string _mailSender;
         private string _mailRecipient;
         private string _mailCopyRecipient;
@@ -104,23 +161,26 @@ namespace Elmah
         public event ErrorMailEventHandler Mailing;
         public event ErrorMailEventHandler Mailed;
         public event ErrorMailEventHandler DisposingMail;
-
+        public bool HttpModuleEnabled;
+        public bool Enabled = true;
         /// <summary>
         /// Initializes the module and prepares it to handle requests.
         /// </summary>
-        
+
         protected override void OnInit(HttpApplication application)
         {
+            if (!Enabled || !HttpModuleEnabled)
+                return;
             if (application == null)
                 throw new ArgumentNullException("application");
-            
+
             //
             // Get the configuration section of this module.
             // If it's not there then there is nothing to initialize or do.
             // In this case, the module is as good as mute.
             //
 
-            IDictionary config = (IDictionary) GetConfig();
+            IDictionary config = (IDictionary)GetConfig();
 
             if (config == null)
                 return;
@@ -130,10 +190,11 @@ namespace Elmah
             //
 
             string mailRecipient = GetSetting(config, "to");
+            bool enabled = Convert.ToBoolean(GetSetting(config, "enabled", bool.TrueString));
             string mailSender = GetSetting(config, "from", mailRecipient);
             string mailCopyRecipient = GetSetting(config, "cc", string.Empty);
             string mailSubjectFormat = GetSetting(config, "subject", string.Empty);
-            MailPriority mailPriority = (MailPriority) Enum.Parse(typeof(MailPriority), GetSetting(config, "priority", MailPriority.Normal.ToString()), true);
+            MailPriority mailPriority = (MailPriority)Enum.Parse(typeof(MailPriority), GetSetting(config, "priority", MailPriority.Normal.ToString()), true);
             bool reportAsynchronously = Convert.ToBoolean(GetSetting(config, "async", bool.TrueString));
             string smtpServer = GetSetting(config, "smtpServer", string.Empty);
             int smtpPort = Convert.ToUInt16(GetSetting(config, "smtpPort", "0"), CultureInfo.InvariantCulture);
@@ -149,7 +210,7 @@ namespace Elmah
 
             application.Error += new EventHandler(OnError);
             ErrorSignal.Get(application).Raised += new ErrorSignalEventHandler(OnErrorSignaled);
-            
+
             //
             // Finally, commit the state of the module if we got this far.
             // Anything beyond this point should not cause an exception.
@@ -170,12 +231,12 @@ namespace Elmah
             _useSsl = useSsl;
 #endif
         }
-        
+
         /// <summary>
         /// Determines whether the module will be registered for discovery
         /// in partial trust environments or not.
         /// </summary>
-        
+
         protected override bool SupportDiscoverability
         {
             get { return true; }
@@ -184,7 +245,7 @@ namespace Elmah
         /// <summary>
         /// Gets the e-mail address of the sender.
         /// </summary>
-        
+
         protected virtual string MailSender
         {
             get { return _mailSender; }
@@ -242,7 +303,7 @@ namespace Elmah
         /// <summary>
         /// Gets the priority of the e-mail. 
         /// </summary>
-        
+
         protected virtual MailPriority MailPriority
         {
             get { return _mailPriority; }
@@ -290,7 +351,7 @@ namespace Elmah
         /// is attached to the e-mail or not. If <c>true</c>, the YSOD is 
         /// not attached.
         /// </summary>
-        
+
         protected bool NoYsod
         {
             get { return _noYsod; }
@@ -315,7 +376,7 @@ namespace Elmah
 
         protected virtual void OnError(object sender, EventArgs e)
         {
-            HttpContext context = ((HttpApplication) sender).Context;
+            HttpContext context = ((HttpApplication)sender).Context;
             OnError(context.Server.GetLastError(), context);
         }
 
@@ -334,7 +395,7 @@ namespace Elmah
 
         protected virtual void OnError(Exception e, HttpContext context)
         {
-            if (e == null) 
+            if (e == null)
                 throw new ArgumentNullException("e");
 
             //
@@ -368,7 +429,7 @@ namespace Elmah
         protected virtual void OnFiltering(ExceptionFilterEventArgs args)
         {
             ExceptionFilterEventHandler handler = Filtering;
-            
+
             if (handler != null)
                 handler(this, args);
         }
@@ -401,7 +462,7 @@ namespace Elmah
         {
             try
             {
-                ReportError((Error) state);
+                ReportError((Error)state);
             }
 
             //
@@ -478,7 +539,7 @@ namespace Elmah
 #else
             mail.From = new MailAddress(sender);
             mail.To.Add(recipient);
-            
+
             if (copyRecipient.Length > 0)
                 mail.CC.Add(copyRecipient);
 #endif
@@ -509,12 +570,12 @@ namespace Elmah
                 case "text/html": mail.IsBodyHtml = true; break;
                 case "text/plain": mail.IsBodyHtml = false; break;
 #endif
-                default :
-                {
-                    throw new ApplicationException(string.Format(
-                        "The error mail module does not know how to handle the {1} media type that is created by the {0} formatter.",
-                        formatter.GetType().FullName, formatter.MimeType));
-                }
+                default:
+                    {
+                        throw new ApplicationException(string.Format(
+                            "The error mail module does not know how to handle the {1} media type that is created by the {0} formatter.",
+                            formatter.GetType().FullName, formatter.MimeType));
+                    }
             }
 
 #if NET_1_1
@@ -729,7 +790,7 @@ namespace Elmah
         /// <summary>
         /// Fires the <see cref="DisposingMail"/> event.
         /// </summary>
-        
+
         protected virtual void OnDisposingMail(ErrorMailEventArgs args)
         {
             if (args == null)
@@ -756,7 +817,7 @@ namespace Elmah
         /// exception generated.
         /// </summary>
 
-        [ Obsolete ]
+        [Obsolete]
         protected virtual Error GetLastError(HttpContext context)
         {
             throw new NotSupportedException();
@@ -772,7 +833,7 @@ namespace Elmah
             Debug.Assert(config != null);
             Debug.AssertStringNotEmpty(name);
 
-            string value = Mask.NullString((string) config[name]);
+            string value = Mask.NullString((string)config[name]);
 
             if (value.Length == 0)
             {

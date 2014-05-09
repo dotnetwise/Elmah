@@ -1,0 +1,4 @@
+*.suo
+bin
+obj
+/src/Solutions/2010/debug.log
